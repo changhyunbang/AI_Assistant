@@ -12,6 +12,9 @@
 
 AI 챗봇 관리 시스템은 기업이나 조직에서 여러 개의 문서 기반 AI 챗봇을 중앙에서 효율적으로 관리할 수 있도록 하는 통합 플랫폼입니다. Azure 클라우드 서비스와 OpenAI의 최신 언어 모델을 활용하여 고품질의 문서 검색 및 자연어 처리 기능을 제공합니다.
 
+<a href="https://github.com/changhyunbang/AI_Assistant/blob/main/streamlit-admin_chatbot-2025-08-07-11-08-51.webm" target="_blank">🚀 데모 영상 실행</a>
+
+
 ## ✨ 주요 기능
 
 ### 🎛️ 관리자 기능
@@ -47,10 +50,10 @@ AI 챗봇 관리 시스템은 기업이나 조직에서 여러 개의 문서 기
 
 ### 1️⃣ 저장소 클론
 ```bash
-git clone https://github.com/your-username/ai-chatbot-management.git
+git clone https://github.com/changhyunbang/AI_Assistant).git
 ```
 
-🌐 브라우저에서 `http://localhost:8501`로 접속
+🌐 브라우저에서 `https://skan-webapp-002-d5ajcxbfgnhgehbb.westus-01.azurewebsites.net`로 접속
 
 ## 🚀 사용법
 
