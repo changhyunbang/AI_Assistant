@@ -22,15 +22,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class AzureSearchIndexCreator:
-    def __init__(self, search_service_name, search_admin_key, storage_connection_string):
+    def __init__(self, search_service_name, search_admin_key, storage_account_name, storage_account_key, storage_container_name):
         """
-        Azure Search 인덱스 생성기 초기화 (Container 기반)
+        Azure Search 인덱스 생성기 초기화
         """
         
         self.search_service_name = search_service_name
         self.search_endpoint = f"https://{search_service_name}.search.windows.net"
         self.search_admin_key = search_admin_key
-        self.storage_connection_string = storage_connection_string
+        self.storage_account_name = storage_account_name
+        self.storage_account_key = storage_account_key
+        self.storage_container_name = storage_container_name
         
         # 클라이언트 초기화
         self.search_client = SearchIndexClient(
@@ -42,25 +44,38 @@ class AzureSearchIndexCreator:
             endpoint=self.search_endpoint,
             credential=AzureKeyCredential(search_admin_key)
         )
+        
+        # Storage 연결 문자열
+        self.storage_connection_string = (
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING") or 
+            f"DefaultEndpointsProtocol=https;AccountName={storage_account_name};AccountKey={storage_account_key};EndpointSuffix=core.windows.net"
+        )
 
-    def create_data_source(self, data_source_name, container_name):
+    def create_data_source(self, data_source_name, folder_path=""):
         """
-        Azure Search 데이터 소스 생성 - 컨테이너 기준
+        Azure Search 데이터 소스 생성 - 폴더 기준 필터링 (OData 방식)
         """
-        # 컨테이너명 정규화
-        container_name = container_name.lower().replace("_", "-").replace(" ", "-")
+        query = None
+        if folder_path:
+            # 폴더 경로 정규화
+            folder_clean = folder_path.strip('/')
+            
+            # OData 방식으로 폴더 필터링 (startswith 함수 사용)
+            query = f"startswith(metadata_storage_name, '{folder_clean}/')"
+            print(f"폴더 필터 적용: {folder_clean}/ (OData 방식)")
         
         data_source = SearchIndexerDataSourceConnection(
             name=data_source_name,
             type="azureblob",
             connection_string=self.storage_connection_string,
-            container=SearchIndexerDataContainer(name=container_name)
+            container=SearchIndexerDataContainer(name=self.storage_container_name, query=query)
         )
         
         try:
             result = self.indexer_client.create_or_update_data_source_connection(data_source)
             print(f"데이터 소스 '{data_source_name}' 생성 완료")
-            print(f"대상 컨테이너: {container_name}")
+            if query:
+                print(f"적용된 쿼리: {query}")
             return result
         except Exception as e:
             print(f"데이터 소스 생성 중 오류 발생: {str(e)}")
@@ -201,66 +216,65 @@ class AzureSearchIndexCreator:
             print(f"인덱스 문서 개수 확인 중 오류 발생: {str(e)}")
             return None
 
-    def debug_container_contents(self, container_name):
+    def debug_folder_contents(self, folder_path=""):
         """
-        컨테이너 내용 상세 디버깅
+        폴더 내용 상세 디버깅
         """
         try:
-            # 컨테이너명 정규화
-            container_name = container_name.lower().replace("_", "-").replace(" ", "-")
-            
             blob_service_client = BlobServiceClient.from_connection_string(self.storage_connection_string)
-            container_client = blob_service_client.get_container_client(container_name)
+            container_client = blob_service_client.get_container_client(self.storage_container_name)
             
-            print(f"\n=== 컨테이너 '{container_name}' 상세 분석 ===")
+            print(f"\n=== 폴더 '{folder_path}' 상세 분석 ===")
             
-            try:
-                # 컨테이너 존재 확인
-                container_properties = container_client.get_container_properties()
-                print(f"컨테이너 존재: ✓")
-                print(f"마지막 수정: {container_properties.last_modified}")
-                
-                # 컨테이너의 모든 Blob 목록 가져오기
-                blobs = list(container_client.list_blobs())
-                print(f"컨테이너의 총 파일 수: {len(blobs)}")
-                
-                if blobs:
-                    print(f"\n파일 목록 (최대 10개):")
-                    for i, blob in enumerate(blobs[:10]):
-                        print(f"  {i+1}. {blob.name}")
-                        print(f"     크기: {blob.size} bytes")
-                        print(f"     마지막 수정: {blob.last_modified}")
-                        print(f"     타입: {blob.content_settings.content_type if blob.content_settings else 'N/A'}")
-                        print()
-                    
-                    if len(blobs) > 10:
-                        print(f"  ... 및 {len(blobs) - 10}개 추가 파일")
-                    
-                    return blobs
+            # 모든 Blob 목록 가져오기
+            all_blobs = list(container_client.list_blobs())
+            print(f"전체 컨테이너의 파일 수: {len(all_blobs)}")
+            
+            # 폴더별 분류
+            folder_files = {}
+            root_files = []
+            
+            for blob in all_blobs:
+                if '/' in blob.name:
+                    folder = blob.name.split('/')[0]
+                    if folder not in folder_files:
+                        folder_files[folder] = []
+                    folder_files[folder].append(blob.name)
                 else:
-                    print(f"컨테이너 '{container_name}'이 비어 있습니다.")
-                    return []
-                    
-            except Exception as container_error:
-                print(f"컨테이너 '{container_name}'에 액세스할 수 없습니다: {container_error}")
+                    root_files.append(blob.name)
+            
+            print(f"\n루트 디렉토리의 파일 수: {len(root_files)}")
+            if root_files:
+                print("루트 파일 예시:")
+                for file in root_files[:5]:
+                    print(f"  - {file}")
+            
+            print(f"\n발견된 폴더들:")
+            for folder, files in folder_files.items():
+                print(f"  {folder}/: {len(files)}개 파일")
+                if folder == folder_path.strip('/'):
+                    print(f"    타겟 폴더 '{folder_path}' 발견! 파일 목록:")
+                    for file in files[:10]:
+                        print(f"      - {file}")
+            
+            # 지정된 폴더의 파일만 필터링
+            if folder_path:
+                folder_clean = folder_path.strip('/')
+                target_files = []
+                for blob in all_blobs:
+                    if blob.name.startswith(folder_clean + '/'):
+                        target_files.append(blob.name)
                 
-                # 모든 컨테이너 목록 표시
-                print("\n사용 가능한 컨테이너 목록:")
-                containers = blob_service_client.list_containers()
-                container_list = []
-                for container in containers:
-                    container_list.append(container.name)
-                    print(f"  - {container.name}")
+                print(f"\n'{folder_clean}/' 으로 시작하는 파일들: {len(target_files)}개")
+                for file in target_files[:10]:
+                    print(f"  - {file}")
                 
-                if container_list:
-                    print(f"\n총 {len(container_list)}개의 컨테이너가 있습니다.")
-                else:
-                    print("사용 가능한 컨테이너가 없습니다.")
-                
-                return []
+                return target_files
+            
+            return all_blobs
             
         except Exception as e:
-            print(f"컨테이너 분석 중 오류: {str(e)}")
+            print(f"폴더 분석 중 오류: {str(e)}")
             return []
 
     def delete_existing_resources(self, base_name):
@@ -291,17 +305,17 @@ class AzureSearchIndexCreator:
         except Exception as e:
             print(f"데이터소스 삭제 중 오류 (무시): {str(e)}")
 
-    def create_simple_pipeline(self, base_name, container_name):
+    def create_simple_pipeline(self, base_name, folder_path="guide"):
         """
-        간단한 파이프라인 생성 - 특정 컨테이너 기준
+        간단한 파이프라인 생성 - 특정 폴더 기준
         """
         print(f"=== 간단한 Azure Search 인덱스 파이프라인 생성 시작 ===")
-        print(f"대상 컨테이너: {container_name}")
+        print(f"대상 폴더: {folder_path}")
         
-        # 컨테이너 내용 상세 분석
-        target_files = self.debug_container_contents(container_name)
+        # 폴더 내용 상세 분석
+        target_files = self.debug_folder_contents(folder_path)
         if not target_files:
-            print(f"컨테이너 '{container_name}'에서 처리할 파일이 없습니다.")
+            print(f"폴더 '{folder_path}'에서 처리할 파일이 없습니다.")
             return False
         
         # 기존 리소스 삭제
@@ -312,8 +326,8 @@ class AzureSearchIndexCreator:
         index_name = f"{base_name}-index"
         indexer_name = f"{base_name}-indexer"
         
-        # 1. 데이터 소스 생성 (컨테이너명 포함)
-        if not self.create_data_source(data_source_name, container_name):
+        # 1. 데이터 소스 생성 (폴더 경로 포함)
+        if not self.create_data_source(data_source_name, folder_path):
             return False
         
         # 2. 인덱스 생성
@@ -366,12 +380,14 @@ class AzureSearchIndexCreator:
 
 def main():
     """
-    컨테이너 기준 인덱싱 실행
+    폴더 기준 인덱싱 실행
     """
     config = {
         "search_service_name": os.getenv("AZURE_SEARCH_SERVICE_NAME"),
         "search_admin_key": os.getenv("AZURE_SEARCH_SERVICE_ADMIN_KEY"),
-        "storage_connection_string": os.getenv("AZURE_STORAGE_CONNECTION_STRING"),
+        "storage_account_name": os.getenv("AZURE_STORAGE_ACCOUNT_NAME"),
+        "storage_account_key": os.getenv("AZURE_STORAGE_ACCOUNT_KEY"),
+        "storage_container_name": os.getenv("AZURE_STORAGE_CONTAINER_NAME"),
     }
     
     missing_vars = [key for key, value in config.items() if not value]
@@ -381,22 +397,21 @@ def main():
     
     creator = AzureSearchIndexCreator(**config)
     
-    # 컨테이너 설정 (환경변수 또는 기본값 사용)
-    container_name = os.getenv("CONTAINER_NAME", "default-container")
-    index_name = os.getenv("INDEX_NAME", f"{container_name}-index")
+    # 폴더 설정
+    folder_path = "guide"  # 여기서 원하는 폴더명으로 변경
+    base_name = f"folder-{folder_path}"
     
-    print(f"타겟 컨테이너: {container_name}")
-    print(f"인덱스 이름: {index_name}")
+    print(f"타겟 폴더: {folder_path}")
     
-    # 컨테이너 기준 파이프라인 실행
-    success = creator.create_simple_pipeline(index_name.replace("-index", ""), container_name)
+    # 폴더 기준 파이프라인 실행
+    success = creator.create_simple_pipeline(base_name, folder_path)
     
     if success:
-        print(f"'{container_name}' 컨테이너 인덱싱이 시작되었습니다.")
+        print(f"'{folder_path}' 폴더 인덱싱이 시작되었습니다.")
         
         # 잠시 후 상태 확인
         time.sleep(30)
-        creator.diagnose_simple_indexing(index_name.replace("-index", ""))
+        creator.diagnose_simple_indexing(base_name)
     else:
         print("인덱스 생성에 실패했습니다.")
 
