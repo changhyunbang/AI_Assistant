@@ -26,7 +26,8 @@ from database_utils import (
     add_chatbot,
     get_all_chatbots,
     update_chatbot_index,
-    update_chatbot_folder
+    update_chatbot_folder,
+    delete_chatbot  # 이 줄 추가
 )
 # 새로운 파일 업로드 모듈 임포트
 from azure_blob_utils import display_file_upload_popup
@@ -49,71 +50,6 @@ def format_file_size(size_bytes):
     p = math.pow(1024, i)
     s = round(size_bytes / p, 2)
     return f"{s} {size_names[i]}"
-
-def find_available_port(start_port=8502):
-    """사용 가능한 포트 찾기"""
-    port = start_port
-    while port < start_port + 100:  # 최대 100개 포트 확인
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('localhost', port))
-                return port
-        except OSError:
-            port += 1
-    return None
-
-def launch_chatbot_popup(chatbot_name, folder_name, index_name):
-    """챗봇 팝업 실행"""
-    try:
-        # 사용 가능한 포트 찾기
-        port = find_available_port()
-        if not port:
-            st.error("사용 가능한 포트를 찾을 수 없습니다.")
-            return
-        
-        # 환경 변수 설정 (필요한 경우)
-        env = os.environ.copy()
-        env['CHATBOT_NAME'] = chatbot_name
-        env['FOLDER_NAME'] = folder_name or chatbot_name
-        env['INDEX_NAME'] = index_name or chatbot_name
-        
-        # streamlit 명령어 구성
-        cmd = [
-            sys.executable, "-m", "streamlit", "run", 
-            "chatbot_popup.py",
-            "--server.port", str(port),
-            "--server.headless", "true",
-            "--browser.gatherUsageStats", "false",
-            "--theme.base", "light"
-        ]
-        
-        # 백그라운드에서 프로세스 실행
-        def run_chatbot():
-            try:
-                subprocess.Popen(
-                    cmd,
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=os.path.dirname(os.path.abspath(__file__))
-                )
-                # 잠시 대기 후 브라우저에서 열기
-                import time
-                time.sleep(2)
-                webbrowser.open(f'http://localhost:{port}')
-            except Exception as e:
-                print(f"챗봇 실행 오류: {e}")
-        
-        # 백그라운드 스레드에서 실행
-        thread = threading.Thread(target=run_chatbot, daemon=True)
-        thread.start()
-        
-        # 성공 메시지 표시
-        st.success(f"🚀 '{chatbot_name}' 챗봇이 새 창에서 실행됩니다! (포트: {port})")
-        st.info("💡 챗봇이 열리지 않으면 브라우저에서 팝업을 허용해주세요.")
-        
-    except Exception as e:
-        st.error(f"챗봇 실행 중 오류 발생: {str(e)}")
 
 def create_index_for_folder(folder_name):
     """특정 폴더에 대한 인덱스 생성"""
@@ -202,14 +138,35 @@ def display_environment_status():
         st.sidebar.write("실행 중인 챗봇: **0개**")
 
 def display_chatbot_management():
-    """챗봇 관리 메인 페이지"""
+    """챗봇 관리 메인 페이지 - 탭 기반으로 변경"""
     st.title("🤖 챗봇 관리 시스템")
     
     # 환경 설정 상태 표시
     display_environment_status()
     
-    # 탭 생성
-    tab1, tab2, tab3 = st.tabs(["📋 챗봇 목록", "➕ 챗봇 등록", "📁 파일 관리"])
+    # 실행 중인 챗봇이 있으면 추가 탭 생성
+    active_chatbot = st.session_state.get('active_chatbot', None)
+    
+    if active_chatbot:
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📋 챗봇 목록", 
+            "➕ 챗봇 등록", 
+            "📁 파일 관리", 
+            f"💬 {active_chatbot['name']}"
+        ])
+        
+        with tab4:
+            # 챗봇 종료 버튼
+            col1, col2 = st.columns([5, 1])
+            with col2:
+                if st.button("❌ 챗봇 종료", key="close_chatbot"):
+                    del st.session_state['active_chatbot']
+                    st.rerun()
+            
+            # 챗봇 UI를 여기에 임베드
+            run_embedded_chatbot(active_chatbot)
+    else:
+        tab1, tab2, tab3 = st.tabs(["📋 챗봇 목록", "➕ 챗봇 등록", "📁 파일 관리"])
     
     with tab1:
         display_chatbot_list()
@@ -241,7 +198,7 @@ def display_chatbot_list():
     # 각 챗봇에 대한 액션 버튼과 정보 표시
     for i, row in df.iterrows():
         with st.container():
-            col1, col2, col3, col4, col5 = st.columns([3, 1.5, 1.5, 1.5, 1.5])
+            col1, col2, col3, col4, col5, col6 = st.columns([2, 1.2, 1.2, 1.2, 1.2, 1])
             
             with col1:
                 st.write(f"**🤖 {row['chatbotname']}**")
@@ -291,23 +248,61 @@ def display_chatbot_list():
                         # 인덱스 생성 실패 시 상태를 대기중으로 설정
                         update_chatbot_index(row['id'], index_status=False)
             
+            # 기존 with col5: 부분을 다음으로 교체
             with col5:
-                # 챗봇 실행 버튼
+                # 챗봇 실행 버튼 - 탭 방식
                 chatbot_name = row['chatbotname']
-                disabled = not row['index_status']  # 인덱스가 완료되지 않으면 비활성화
+                disabled = not row['index_status']
                 
                 if st.button(
                     f"🚀 실행", 
                     key=f"run_{row['id']}",
                     disabled=disabled,
-                    help="인덱스가 완료된 후 실행 가능합니다" if disabled else f"{chatbot_name} 챗봇을 새 창에서 실행합니다"
+                    help="인덱스가 완료된 후 실행 가능합니다" if disabled else f"{chatbot_name} 챗봇을 실행합니다"
                 ):
-                    # 실행 중인 챗봇 목록에 추가
-                    if chatbot_name not in st.session_state.running_chatbots:
-                        st.session_state.running_chatbots.append(chatbot_name)
+                    # 활성 챗봇으로 설정
+                    st.session_state['active_chatbot'] = {
+                        'name': row['chatbotname'],
+                        'folder': row['foldername'],
+                        # 'index': row['index_name']
+                        'index': 'azureblob-index'
+                    }
                     
-                    # 챗봇 팝업 실행
-                    launch_chatbot_popup(chatbot_name, row['foldername'], row['index_name'])
+                    st.success(f"✅ {chatbot_name} 챗봇이 활성화되었습니다!")
+                    st.rerun()
+            with col6:
+                # 삭제 버튼
+                if st.button(
+                    "🗑️", 
+                    key=f"delete_{row['id']}",
+                    help=f"{row['chatbotname']} 삭제",
+                    type="secondary"
+                ):
+                    st.session_state[f"confirm_delete_{row['id']}"] = True
+
+            # 삭제 확인 대화상자
+            if st.session_state.get(f"confirm_delete_{row['id']}", False):
+                st.warning(f"⚠️ **'{row['chatbotname']}'** 챗봇을 정말 삭제하시겠습니까?")
+                
+                col_confirm1, col_confirm2, col_confirm3 = st.columns([1, 1, 2])
+                
+                with col_confirm1:
+                    if st.button("✅ 삭제", key=f"confirm_yes_{row['id']}", type="primary"):
+                        success = delete_chatbot(row['id'])
+                        if success:
+                            st.success(f"✅ '{row['chatbotname']}' 챗봇이 삭제되었습니다!")
+                            # 활성 챗봇이 삭제된 챗봇이면 제거
+                            if (st.session_state.get('active_chatbot') and 
+                                st.session_state['active_chatbot']['name'] == row['chatbotname']):
+                                del st.session_state['active_chatbot']
+                            st.rerun()
+                        else:
+                            st.error("❌ 삭제 실패")
+                
+                with col_confirm2:
+                    if st.button("❌ 취소", key=f"confirm_no_{row['id']}"):
+                        st.session_state[f"confirm_delete_{row['id']}"] = False
+                        st.rerun()
         
         # 파일 업로드 팝업 표시
         if st.session_state.get(f"show_upload_{row['id']}", False):
@@ -347,6 +342,173 @@ def display_chatbot_list():
                     st.rerun()
             
             st.markdown("---")
+
+# launch_chatbot_popup 함수를 삭제하고 다음 함수로 교체
+def run_embedded_chatbot(chatbot_info):
+    """챗봇을 현재 페이지에 임베드해서 실행"""
+    from azure.core.credentials import AzureKeyCredential
+    from azure.search.documents import SearchClient
+    from openai import AzureOpenAI
+    import time
+    
+    # 환경 변수 설정
+    index_name = chatbot_info['index']
+    folder_name = chatbot_info['folder']
+    
+    st.header(f"💬 {chatbot_info['name']} 챗봇")
+    
+    # Azure 클라이언트 초기화 (chatbot_popup.py의 로직 사용)
+    try:
+        search_client = SearchClient(
+            endpoint=f"https://{os.getenv('AZURE_SEARCH_SERVICE_NAME')}.search.windows.net",
+            index_name=index_name,
+            credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_SERVICE_ADMIN_KEY"))
+        )
+        
+        openai_client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_version="2023-12-01-preview"
+        )
+    except Exception as e:
+        st.error(f"Azure 클라이언트 초기화 실패: {e}")
+        return
+    
+    # 문서 상태 확인
+    doc_count = get_document_count_embedded(search_client)
+    
+    if doc_count == 0:
+        st.warning("⚠️ 인덱스에 문서가 없습니다. 먼저 인덱스를 갱신해주세요.")
+        return
+    
+    st.info(f"📚 현재 {doc_count}개의 문서가 검색 가능합니다.")
+    
+    # 세션 상태 초기화 (챗봇별로 분리)
+    chat_key = f"messages_{chatbot_info['name']}"
+    if chat_key not in st.session_state:
+        st.session_state[chat_key] = []
+    
+    # 채팅 기록 표시
+    for message in st.session_state[chat_key]:
+        if message["role"] == "user":
+            with st.chat_message("user"):
+                st.write(message["content"])
+        elif message["role"] == "assistant":
+            with st.chat_message("assistant"):
+                st.write(message["content"])
+                if "sources" in message and message["sources"]:
+                    st.caption(f"📋 참고 문서: {', '.join(message['sources'])}")
+    
+    # 입력 영역
+    if prompt := st.chat_input(f"{chatbot_info['name']}에게 질문하세요..."):
+        # 사용자 메시지 추가
+        st.session_state[chat_key].append({"role": "user", "content": prompt})
+        
+        with st.chat_message("user"):
+            st.write(prompt)
+        
+        # AI 응답 생성
+        with st.chat_message("assistant"):
+            with st.spinner("답변을 생성하고 있습니다..."):
+                answer, sources = search_and_answer_embedded(search_client, openai_client, prompt)
+                st.write(answer)
+                if sources:
+                    st.caption(f"📋 참고 문서: {', '.join(sources)}")
+        
+        # AI 메시지 추가
+        st.session_state[chat_key].append({
+            "role": "assistant", 
+            "content": answer,
+            "sources": sources
+        })
+    
+    # 채팅 기록 클리어 버튼
+    if st.session_state[chat_key]:
+        if st.button("🗑️ 채팅 기록 삭제", key=f"clear_{chatbot_info['name']}"):
+            st.session_state[chat_key] = []
+            st.rerun()
+
+# chatbot_popup.py의 함수들을 복사해서 추가
+def get_document_count_embedded(search_client):
+    """인덱스의 문서 수 확인"""
+    try:
+        results = search_client.search(search_text="*", top=1, include_total_count=True)
+        return results.get_count()
+    except Exception as e:
+        st.error(f"문서 수 확인 실패: {e}")
+        return 0
+
+def get_best_content_embedded(doc):
+    """문서에서 가장 좋은 텍스트 내용을 반환"""
+    content = doc.get("content", "").strip()
+    ocr_text = doc.get("ocr_text", "").strip()
+    filename = doc.get("metadata_storage_name", "Unknown")
+    
+    if ocr_text:
+        return ocr_text, f"{filename} (OCR)"
+    elif content:
+        return content, f"{filename} (원본)"
+    else:
+        return "", filename
+
+def search_and_answer_embedded(search_client, openai_client, question):
+    """질문에 대해 검색하고 GPT로 답변 생성"""
+    try:
+        # Azure Search로 관련 문서 검색
+        results = search_client.search(
+            search_text=question,
+            top=3,
+            search_mode="any"
+        )
+        
+        # 검색된 문서의 내용 수집
+        contexts = []
+        sources = []
+        
+        for doc in results:
+            text, source = get_best_content_embedded(doc)
+            if text:
+                contexts.append(text)
+                sources.append(source)
+        
+        if not contexts:
+            return "❌ 질문과 관련된 문서를 찾을 수 없습니다.", []
+        
+        # 모든 컨텍스트를 합치되, 너무 길면 자르기
+        combined_context = "\n\n".join(contexts)
+        if len(combined_context) > 8000:
+            combined_context = combined_context[:8000] + "...[내용 일부 생략]"
+    
+        # GPT에게 질문과 컨텍스트 전달
+        response = openai_client.chat.completions.create(
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
+            messages=[
+                {
+                    "role": "system", 
+                    "content": """당신은 제공된 문서를 바탕으로 정확하고 도움이 되는 답변을 제공하는 AI 어시스턴트입니다.
+
+규칙:
+1. 제공된 문서의 내용만을 바탕으로 답변하세요
+2. 문서에 없는 내용은 추측하지 마세요  
+3. 답변할 수 없다면 솔직히 말하세요
+4. 가능한 한 구체적이고 정확한 정보를 제공하세요
+5. 한국어로 자연스럽게 답변하세요
+6. 답변의 근거가 되는 부분이 있다면 언급해주세요"""
+                },
+                {
+                    "role": "user", 
+                    "content": f"다음 문서들을 바탕으로 질문에 답변해주세요.\n\n문서 내용:\n{combined_context}\n\n질문: {question}"
+                }
+            ],
+            temperature=0.2,
+            max_tokens=1500
+        )
+        
+        answer = response.choices[0].message.content
+        return answer, sources
+        
+    except Exception as e:
+        return f"❌ 검색 또는 답변 생성 실패: {e}", []
 
 def display_chatbot_registration():
     """새 챗봇 등록"""
